@@ -119,8 +119,6 @@ Balance is recalculated automatically after deletion.
 |---|---|
 | `/getwebhook` | Show the currently registered Telegram webhook |
 | `/setwebhook https://your-url/` | Register or update the webhook URL |
-| `/deletewebhook` | Remove the webhook |
-| `/deletewebhook drop` | Remove the webhook and drop pending updates |
 
 ---
 

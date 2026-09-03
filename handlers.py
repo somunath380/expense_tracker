@@ -48,9 +48,11 @@ def help_text() -> str:
         "/delete 12 — delete transaction by id\n"
         "/edit last 200 biriyani — edit last transaction\n"
         "/edit 12 amount 200 — edit transaction by id\n"
+        "/categories — list categories\n"
+        "/transactions [limit] — list recent transactions\n"
+        "/transaction <id> — show a single transaction\n"
         "/getwebhook — show current Telegram webhook\n"
-        "/setwebhook https://your-url/ — register webhook\n"
-        "/deletewebhook — remove webhook"
+        "/setwebhook https://your-url/ — register webhook"
     )
 
 
@@ -203,6 +205,54 @@ async def handle_command(text: str, chat_id: int, message_id: int) -> str:
     if command == "/edit":
         return await _handle_edit(chat_id, args)
 
+    if command == "/categories":
+        categories = get_category_names()
+        if not categories:
+            return "No categories yet."
+        lines = ["Categories:", ""]
+        for name in categories:
+            lines.append(f"• {name}")
+        return "\n".join(lines)
+
+    if command == "/transactions":
+        limit = 5
+        if args.strip():
+            try:
+                limit = int(args.strip())
+            except ValueError:
+                return "Usage: /transactions [limit]"
+        if limit < 1 or limit > 50:
+            return "Limit must be between 1 and 50."
+        rows = get_last_transactions(chat_id, limit=limit)
+        if not rows:
+            return "No transactions yet."
+        lines = ["Recent transactions:", ""]
+        for row in rows:
+            category = row.get("category_name") or "-"
+            desc = row.get("description") or "-"
+            lines.append(
+                f"#{row['id']} {row['type']} {format_inr(abs(row['amount']))} {desc} ({category})"
+            )
+        return "\n".join(lines)
+
+    if command == "/transaction":
+        tx_id_raw = args.strip().split()[0] if args.strip() else ""
+        if not tx_id_raw.isdigit():
+            return "Usage: /transaction <id>"
+        tx_id = int(tx_id_raw)
+        tx = get_transaction(chat_id, tx_id)
+        if not tx:
+            return f"Transaction #{tx_id} not found."
+        category = tx.get("category_name") or "-"
+        return (
+            f"Transaction #{tx_id}\n"
+            f"Type: {tx['type']}\n"
+            f"Amount: {format_inr(abs(tx['amount']))}\n"
+            f"Description: {tx.get('description') or '-'}\n"
+            f"Category: {category}\n"
+            f"Created: {tx.get('created_at') or '-'}"
+        )
+
     if command == "/getwebhook":
         try:
             info = await get_webhook_info()
@@ -219,14 +269,6 @@ async def handle_command(text: str, chat_id: int, message_id: int) -> str:
             return f"Webhook registered.\nURL: {result['url']}\n{result.get('description') or ''}".strip()
         except TelegramWebhookError as exc:
             return f"Failed to set webhook: {exc.message}"
-
-    if command == "/deletewebhook":
-        drop_pending = args.strip().lower() in {"drop", "true", "1"}
-        try:
-            result = await delete_webhook(drop_pending_updates=drop_pending)
-            return result.get("description") or "Webhook deleted."
-        except TelegramWebhookError as exc:
-            return f"Failed to delete webhook: {exc.message}"
 
     return "Unknown command. Send /help for options."
 
