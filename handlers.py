@@ -18,6 +18,13 @@ from db import (
 )
 from llm import analyze_month, parse_transaction
 from pipeline import format_confirmation, format_inr, process_transaction
+from telegram_webhook import (
+    TelegramWebhookError,
+    delete_webhook,
+    format_webhook_info,
+    get_webhook_info,
+    set_webhook,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +47,10 @@ def help_text() -> str:
         "/delete last — delete last transaction\n"
         "/delete 12 — delete transaction by id\n"
         "/edit last 200 biriyani — edit last transaction\n"
-        "/edit 12 amount 200 — edit transaction by id"
+        "/edit 12 amount 200 — edit transaction by id\n"
+        "/getwebhook — show current Telegram webhook\n"
+        "/setwebhook https://your-url/ — register webhook\n"
+        "/deletewebhook — remove webhook"
     )
 
 
@@ -192,6 +202,31 @@ async def handle_command(text: str, chat_id: int, message_id: int) -> str:
 
     if command == "/edit":
         return await _handle_edit(chat_id, args)
+
+    if command == "/getwebhook":
+        try:
+            info = await get_webhook_info()
+            return format_webhook_info(info)
+        except TelegramWebhookError as exc:
+            return f"Failed to get webhook: {exc.message}"
+
+    if command == "/setwebhook":
+        url = args.strip()
+        if not url.startswith("https://"):
+            return "Usage: /setwebhook https://your-public-url/"
+        try:
+            result = await set_webhook(url)
+            return f"Webhook registered.\nURL: {result['url']}\n{result.get('description') or ''}".strip()
+        except TelegramWebhookError as exc:
+            return f"Failed to set webhook: {exc.message}"
+
+    if command == "/deletewebhook":
+        drop_pending = args.strip().lower() in {"drop", "true", "1"}
+        try:
+            result = await delete_webhook(drop_pending_updates=drop_pending)
+            return result.get("description") or "Webhook deleted."
+        except TelegramWebhookError as exc:
+            return f"Failed to delete webhook: {exc.message}"
 
     return "Unknown command. Send /help for options."
 

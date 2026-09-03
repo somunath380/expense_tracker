@@ -1,6 +1,4 @@
 import logging
-import subprocess
-import tempfile
 from pathlib import Path
 
 from groq import Groq
@@ -13,21 +11,15 @@ groq_client = Groq(api_key=GROQ_API_KEY)
 
 
 def transcribe_audio(audio_path: Path, language: str = "en") -> str:
-    """Convert a downloaded .oga file to text using Groq Whisper."""
+    """Transcribe a downloaded Telegram .oga file using Groq Whisper."""
     logger.info("Transcribing audio path=%s language=%s", audio_path, language)
-    with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as tmp:
-        mp3_path = tmp.name
 
     try:
-        subprocess.run(
-            ["ffmpeg", "-i", str(audio_path), mp3_path, "-y", "-loglevel", "quiet"],
-            check=True,
-        )
-
-        with open(mp3_path, "rb") as audio_file:
+        with open(audio_path, "rb") as audio_file:
+            # Groq accepts ogg/opus, not Telegram's .oga extension
             result = groq_client.audio.transcriptions.create(
                 model=WHISPER_MODEL,
-                file=("voice.mp3", audio_file),
+                file=("voice.ogg", audio_file),
                 language=language,
             )
 
@@ -37,5 +29,3 @@ def transcribe_audio(audio_path: Path, language: str = "en") -> str:
     except Exception:
         logger.exception("Transcription failed path=%s", audio_path)
         raise
-    finally:
-        Path(mp3_path).unlink(missing_ok=True)

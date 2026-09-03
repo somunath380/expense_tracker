@@ -4,6 +4,7 @@ import logging
 import httpx
 from fastapi import BackgroundTasks, FastAPI, Request
 
+from api import router as api_router
 from config import TG
 from db import init_db
 from handlers import handle_command, is_command
@@ -25,6 +26,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(lifespan=lifespan)
+app.include_router(api_router)
 
 
 @app.post("/")

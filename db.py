@@ -1,9 +1,10 @@
 import logging
-import sqlite3
 from contextlib import contextmanager
 from datetime import datetime
 
-from config import DB_PATH
+import libsql
+
+from config import TURSO_AUTH_TOKEN, TURSO_DATABASE_URL
 
 logger = logging.getLogger(__name__)
 
@@ -11,7 +12,7 @@ TRANSACTION_TYPES = frozenset({"expense", "income", "adjustment"})
 
 
 def init_db() -> None:
-    logger.info("Initializing database path=%s", DB_PATH)
+    logger.info("Initializing Turso database url=%s", TURSO_DATABASE_URL)
     with get_connection() as conn:
         conn.executescript(
             """
@@ -43,8 +44,10 @@ def init_db() -> None:
 
 @contextmanager
 def get_connection():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
+    conn = libsql.connect(
+        database=TURSO_DATABASE_URL,
+        auth_token=TURSO_AUTH_TOKEN,
+    )
     try:
         yield conn
         conn.commit()
@@ -56,13 +59,30 @@ def get_connection():
         conn.close()
 
 
+def _row_to_dict(row, cursor) -> dict | None:
+    if row is None:
+        return None
+    if hasattr(row, "keys"):
+        return {key: row[key] for key in row.keys()}
+    columns = [col[0] for col in cursor.description]
+    return dict(zip(columns, row))
+
+
+def _fetchone_dict(cursor) -> dict | None:
+    return _row_to_dict(cursor.fetchone(), cursor)
+
+
+def _fetchall_dicts(cursor) -> list[dict]:
+    return [_row_to_dict(row, cursor) for row in cursor.fetchall()]
+
+
 def normalize_category(name: str) -> str:
     return name.strip().title()
 
 
 def get_category_names() -> list[str]:
     with get_connection() as conn:
-        rows = conn.execute("SELECT name FROM categories ORDER BY name").fetchall()
+        rows = _fetchall_dicts(conn.execute("SELECT name FROM categories ORDER BY name"))
     return [row["name"] for row in rows]
 
 
@@ -73,39 +93,45 @@ def get_or_create_category(name: str) -> int:
             "INSERT OR IGNORE INTO categories (name) VALUES (?)",
             (normalized,),
         )
-        row = conn.execute(
-            "SELECT id FROM categories WHERE name = ?",
-            (normalized,),
-        ).fetchone()
+        row = _fetchone_dict(
+            conn.execute(
+                "SELECT id FROM categories WHERE name = ?",
+                (normalized,),
+            )
+        )
     return row["id"]
 
 
 def transaction_exists(chat_id: int, telegram_message_id: int) -> bool:
     with get_connection() as conn:
-        row = conn.execute(
-            """
-            SELECT 1 FROM transactions
-            WHERE chat_id = ? AND telegram_message_id = ?
-            """,
-            (chat_id, telegram_message_id),
-        ).fetchone()
+        row = _fetchone_dict(
+            conn.execute(
+                """
+                SELECT 1 FROM transactions
+                WHERE chat_id = ? AND telegram_message_id = ?
+                """,
+                (chat_id, telegram_message_id),
+            )
+        )
     return row is not None
 
 
 def get_balance(chat_id: int) -> float:
     with get_connection() as conn:
-        row = conn.execute(
-            """
-            SELECT
-                COALESCE(SUM(CASE WHEN type = 'income' THEN amount ELSE 0 END), 0)
-                + COALESCE(SUM(CASE WHEN type = 'adjustment' THEN amount ELSE 0 END), 0)
-                - COALESCE(SUM(CASE WHEN type = 'expense' THEN amount ELSE 0 END), 0)
-                AS balance
-            FROM transactions
-            WHERE chat_id = ?
-            """,
-            (chat_id,),
-        ).fetchone()
+        row = _fetchone_dict(
+            conn.execute(
+                """
+                SELECT
+                    COALESCE(SUM(CASE WHEN type = 'income' THEN amount ELSE 0 END), 0)
+                    + COALESCE(SUM(CASE WHEN type = 'adjustment' THEN amount ELSE 0 END), 0)
+                    - COALESCE(SUM(CASE WHEN type = 'expense' THEN amount ELSE 0 END), 0)
+                    AS balance
+                FROM transactions
+                WHERE chat_id = ?
+                """,
+                (chat_id,),
+            )
+        )
     return float(row["balance"])
 
 
@@ -175,10 +201,12 @@ def get_category_name(category_id: int | None) -> str | None:
     if category_id is None:
         return None
     with get_connection() as conn:
-        row = conn.execute(
-            "SELECT name FROM categories WHERE id = ?",
-            (category_id,),
-        ).fetchone()
+        row = _fetchone_dict(
+            conn.execute(
+                "SELECT name FROM categories WHERE id = ?",
+                (category_id,),
+            )
+        )
     return row["name"] if row else None
 
 
@@ -188,36 +216,40 @@ def get_summary_by_category(
     end: datetime,
 ) -> list[dict]:
     with get_connection() as conn:
-        rows = conn.execute(
-            """
-            SELECT c.name AS category, SUM(t.amount) AS total
-            FROM transactions t
-            JOIN categories c ON t.category_id = c.id
-            WHERE t.chat_id = ?
-              AND t.type = 'expense'
-              AND t.created_at >= ?
-              AND t.created_at <= ?
-            GROUP BY c.name
-            ORDER BY total DESC
-            """,
-            (chat_id, start.isoformat(), end.isoformat()),
-        ).fetchall()
+        rows = _fetchall_dicts(
+            conn.execute(
+                """
+                SELECT c.name AS category, SUM(t.amount) AS total
+                FROM transactions t
+                JOIN categories c ON t.category_id = c.id
+                WHERE t.chat_id = ?
+                  AND t.type = 'expense'
+                  AND t.created_at >= ?
+                  AND t.created_at <= ?
+                GROUP BY c.name
+                ORDER BY total DESC
+                """,
+                (chat_id, start.isoformat(), end.isoformat()),
+            )
+        )
     return [{"category": row["category"], "total": float(row["total"])} for row in rows]
 
 
 def get_expense_total(chat_id: int, start: datetime, end: datetime) -> float:
     with get_connection() as conn:
-        row = conn.execute(
-            """
-            SELECT COALESCE(SUM(amount), 0) AS total
-            FROM transactions
-            WHERE chat_id = ?
-              AND type = 'expense'
-              AND created_at >= ?
-              AND created_at <= ?
-            """,
-            (chat_id, start.isoformat(), end.isoformat()),
-        ).fetchone()
+        row = _fetchone_dict(
+            conn.execute(
+                """
+                SELECT COALESCE(SUM(amount), 0) AS total
+                FROM transactions
+                WHERE chat_id = ?
+                  AND type = 'expense'
+                  AND created_at >= ?
+                  AND created_at <= ?
+                """,
+                (chat_id, start.isoformat(), end.isoformat()),
+            )
+        )
     return float(row["total"])
 
 
@@ -256,32 +288,34 @@ def get_month_aggregates(chat_id: int, year: int, month: int) -> dict:
 
 def get_last_transactions(chat_id: int, limit: int = 5) -> list[dict]:
     with get_connection() as conn:
-        rows = conn.execute(
-            """
-            SELECT t.*, c.name AS category_name
-            FROM transactions t
-            LEFT JOIN categories c ON t.category_id = c.id
-            WHERE t.chat_id = ?
-            ORDER BY t.id DESC
-            LIMIT ?
-            """,
-            (chat_id, limit),
-        ).fetchall()
-    return [_row_to_dict(row) for row in rows]
+        return _fetchall_dicts(
+            conn.execute(
+                """
+                SELECT t.*, c.name AS category_name
+                FROM transactions t
+                LEFT JOIN categories c ON t.category_id = c.id
+                WHERE t.chat_id = ?
+                ORDER BY t.id DESC
+                LIMIT ?
+                """,
+                (chat_id, limit),
+            )
+        )
 
 
 def get_transaction(chat_id: int, tx_id: int) -> dict | None:
     with get_connection() as conn:
-        row = conn.execute(
-            """
-            SELECT t.*, c.name AS category_name
-            FROM transactions t
-            LEFT JOIN categories c ON t.category_id = c.id
-            WHERE t.chat_id = ? AND t.id = ?
-            """,
-            (chat_id, tx_id),
-        ).fetchone()
-    return _row_to_dict(row) if row else None
+        return _fetchone_dict(
+            conn.execute(
+                """
+                SELECT t.*, c.name AS category_name
+                FROM transactions t
+                LEFT JOIN categories c ON t.category_id = c.id
+                WHERE t.chat_id = ? AND t.id = ?
+                """,
+                (chat_id, tx_id),
+            )
+        )
 
 
 def delete_transaction(chat_id: int, tx_id: int) -> bool:
@@ -334,5 +368,198 @@ def update_transaction(
     return True
 
 
-def _row_to_dict(row: sqlite3.Row) -> dict:
-    return {key: row[key] for key in row.keys()}
+def list_categories() -> list[dict]:
+    with get_connection() as conn:
+        return _fetchall_dicts(
+            conn.execute("SELECT id, name, created_at FROM categories ORDER BY name")
+        )
+
+
+def list_transactions(
+    *,
+    chat_id: int | None = None,
+    tx_type: str | None = None,
+    category: str | None = None,
+    limit: int = 100,
+    offset: int = 0,
+) -> list[dict]:
+    query = """
+        SELECT t.*, c.name AS category_name
+        FROM transactions t
+        LEFT JOIN categories c ON t.category_id = c.id
+        WHERE 1=1
+    """
+    params: list = []
+
+    if chat_id is not None:
+        query += " AND t.chat_id = ?"
+        params.append(chat_id)
+    if tx_type is not None:
+        query += " AND t.type = ?"
+        params.append(tx_type)
+    if category is not None:
+        query += " AND c.name = ?"
+        params.append(normalize_category(category))
+
+    query += " ORDER BY t.id DESC LIMIT ? OFFSET ?"
+    params.extend([limit, offset])
+
+    with get_connection() as conn:
+        return _fetchall_dicts(conn.execute(query, params))
+
+
+def get_transaction_by_id(tx_id: int) -> dict | None:
+    with get_connection() as conn:
+        return _fetchone_dict(
+            conn.execute(
+                """
+                SELECT t.*, c.name AS category_name
+                FROM transactions t
+                LEFT JOIN categories c ON t.category_id = c.id
+                WHERE t.id = ?
+                """,
+                (tx_id,),
+            )
+        )
+
+
+def delete_transaction_by_id(tx_id: int) -> bool:
+    with get_connection() as conn:
+        cursor = conn.execute("DELETE FROM transactions WHERE id = ?", (tx_id,))
+    return cursor.rowcount > 0
+
+
+def update_transaction_by_id(
+    tx_id: int,
+    *,
+    amount: float | None = None,
+    tx_type: str | None = None,
+    category_id: int | None = None,
+    description: str | None = None,
+    source_text: str | None = None,
+    created_at: str | None = None,
+) -> bool:
+    if get_transaction_by_id(tx_id) is None:
+        return False
+
+    fields = []
+    values = []
+
+    if amount is not None:
+        fields.append("amount = ?")
+        values.append(amount)
+    if tx_type is not None:
+        fields.append("type = ?")
+        values.append(tx_type)
+    if category_id is not None:
+        fields.append("category_id = ?")
+        values.append(category_id)
+    if description is not None:
+        fields.append("description = ?")
+        values.append(description)
+    if source_text is not None:
+        fields.append("source_text = ?")
+        values.append(source_text)
+    if created_at is not None:
+        fields.append("created_at = ?")
+        values.append(created_at)
+
+    if not fields:
+        return True
+
+    values.append(tx_id)
+    with get_connection() as conn:
+        conn.execute(
+            f"UPDATE transactions SET {', '.join(fields)} WHERE id = ?",
+            values,
+        )
+    return True
+
+
+def export_data() -> dict:
+    with get_connection() as conn:
+        categories = _fetchall_dicts(
+            conn.execute("SELECT id, name, created_at FROM categories ORDER BY id")
+        )
+        transactions = _fetchall_dicts(
+            conn.execute(
+                """
+                SELECT t.*, c.name AS category_name
+                FROM transactions t
+                LEFT JOIN categories c ON t.category_id = c.id
+                ORDER BY t.id
+                """
+            )
+        )
+    return {
+        "categories": categories,
+        "transactions": transactions,
+    }
+
+
+def clear_all_data() -> None:
+    with get_connection() as conn:
+        conn.execute("DELETE FROM transactions")
+        conn.execute("DELETE FROM categories")
+        try:
+            conn.execute(
+                "DELETE FROM sqlite_sequence WHERE name IN ('transactions', 'categories')"
+            )
+        except libsql.Error:
+            pass
+
+
+def import_data(payload: dict, *, replace: bool = False) -> dict:
+    if replace:
+        clear_all_data()
+
+    imported_categories = 0
+    imported_transactions = 0
+
+    for category in payload.get("categories", []):
+        name = category.get("name")
+        if not name:
+            continue
+        get_or_create_category(name)
+        imported_categories += 1
+
+    for tx in payload.get("transactions", []):
+        tx_type = tx.get("type")
+        amount = tx.get("amount")
+        if tx_type not in TRANSACTION_TYPES or amount is None:
+            continue
+
+        category_id = None
+        category_name = tx.get("category_name") or tx.get("category")
+        if category_name:
+            category_id = get_or_create_category(category_name)
+        elif tx.get("category_id"):
+            category_id = tx["category_id"]
+
+        try:
+            insert_transaction(
+                chat_id=tx.get("chat_id", 0),
+                tx_type=tx_type,
+                amount=float(amount),
+                category_id=category_id,
+                description=tx.get("description"),
+                source_text=tx.get("source_text"),
+                telegram_message_id=None if not replace else tx.get("telegram_message_id"),
+            )
+            imported_transactions += 1
+        except libsql.Error:
+            logger.warning("Skipped duplicate imported transaction: %s", tx.get("id"))
+
+    logger.info(
+        "Imported data replace=%s categories=%s transactions=%s",
+        replace,
+        imported_categories,
+        imported_transactions,
+    )
+    return {
+        "imported_categories": imported_categories,
+        "imported_transactions": imported_transactions,
+        "replaced": replace,
+    }
+
+

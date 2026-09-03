@@ -8,6 +8,8 @@ dependencies = [
     "fastapi>=0.141.1",
     "groq>=1.7.0",
     "httpx>=0.28.1",
+    "libsql>=0.1.11",
     "python-dotenv>=1.2.3",
+    "python-multipart>=0.0.32",
     "uvicorn>=0.52.4",
 ]

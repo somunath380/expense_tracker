@@ -9,7 +9,7 @@ A personal expense tracker powered by a **Telegram bot** and a **FastAPI** webho
 3. A **background task** processes the message:
    - Voice notes are transcribed with **Groq Whisper**.
    - Text is parsed with **Groq LLM** into amount, category, and description.
-   - The transaction is saved to a local **SQLite** database.
+   - The transaction is saved to **Turso** (libSQL).
 4. You receive a follow-up confirmation with the transaction id and updated balance.
 
 Summaries and totals are computed from the database. The LLM is used only for parsing natural language and writing monthly analysis narratives — not for math.
@@ -113,6 +113,15 @@ Balance is recalculated automatically after deletion.
 | `/edit 12 amount 200` | Change only the amount on transaction #12 |
 | `/edit 12 200 biriyani` | Re-parse and update transaction #12 |
 
+### Webhooks
+
+| Command | Description |
+|---|---|
+| `/getwebhook` | Show the currently registered Telegram webhook |
+| `/setwebhook https://your-url/` | Register or update the webhook URL |
+| `/deletewebhook` | Remove the webhook |
+| `/deletewebhook drop` | Remove the webhook and drop pending updates |
+
 ---
 
 ## Setup
@@ -121,7 +130,6 @@ Balance is recalculated automatically after deletion.
 
 - Python 3.14+
 - [uv](https://docs.astral.sh/uv/)
-- [ffmpeg](https://ffmpeg.org/) (for voice transcription)
 - Telegram bot token ([BotFather](https://t.me/BotFather))
 - Groq API key ([console.groq.com](https://console.groq.com))
 
@@ -147,7 +155,8 @@ Or use the **Run FastAPI Server** launch configuration in `.vscode/launch.json`.
 | `WHISPER_MODEL` | Speech-to-text model (default: `whisper-large-v3-turbo`) |
 | `LLM_MODEL` | Model for parsing expenses (default: `openai/gpt-oss-20b`) |
 | `ANALYZE_MODEL` | Model for monthly analysis (default: `openai/gpt-oss-120b`) |
-| `DB_PATH` | SQLite database file (default: `expense_tracker.db`) |
+| `TURSO_DATABASE_URL` | Turso/libSQL database URL |
+| `TURSO_AUTH_TOKEN` | Turso database auth token |
 | `LOG_LEVEL` | Logging level: `INFO` or `DEBUG` |
 
 ### Telegram webhook (ngrok)
@@ -180,17 +189,88 @@ Re-register the webhook whenever ngrok restarts and gives you a new URL.
 
 ---
 
+## REST API
+
+Interactive docs: `http://localhost:8000/docs`
+
+### Transactions
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/api/transactions` | List transactions (`chat_id`, `type`, `category`, `limit`, `offset`) |
+| `GET` | `/api/transactions/{id}` | Get one transaction |
+| `POST` | `/api/transactions` | Create a transaction |
+| `PATCH` | `/api/transactions/{id}` | Update a transaction |
+| `DELETE` | `/api/transactions/{id}` | Delete a transaction |
+
+Create example:
+
+```bash
+curl -X POST http://localhost:8000/api/transactions \
+  -H "Content-Type: application/json" \
+  -d '{"chat_id": 123, "type": "expense", "amount": 150, "category": "Food", "description": "biriyani"}'
+```
+
+### Other
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/api/categories` | List categories |
+| `GET` | `/api/balance?chat_id=123` | Computed balance |
+
+### Import / export
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/api/export` | Download all categories and transactions as JSON |
+| `POST` | `/api/import` | Upload a JSON export file (`replace=true` wipes existing data first) |
+
+```bash
+curl -o backup.json http://localhost:8000/api/export
+
+curl -X POST "http://localhost:8000/api/import?replace=false" \
+  -F "file=@backup.json"
+```
+
+### Telegram webhooks
+
+The bot webhook route is `POST /`. Register a public HTTPS URL that points there (ngrok or Render).
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/api/webhook` | Current webhook (`getWebhookInfo`) |
+| `POST` | `/api/webhook` | Register / update webhook (`setWebhook`) |
+| `DELETE` | `/api/webhook` | Remove webhook (`deleteWebhook`) |
+
+```bash
+# View current webhook
+curl http://localhost:8000/api/webhook
+
+# Register (use your public URL; path is /)
+curl -X POST http://localhost:8000/api/webhook \
+  -H "Content-Type: application/json" \
+  -d '{"url": "https://YOUR-PUBLIC-URL/"}'
+
+# Delete
+curl -X DELETE http://localhost:8000/api/webhook \
+  -H "Content-Type: application/json" \
+  -d '{"drop_pending_updates": false}'
+```
+
+---
+
 ## Project structure
 
 | File | Purpose |
 |---|---|
 | `main.py` | FastAPI webhook handler |
+| `api.py` | REST CRUD, import, and export endpoints |
 | `handlers.py` | Telegram command routing |
 | `pipeline.py` | Parse → save → confirm flow |
 | `voice.py` | Voice download and transcription pipeline |
 | `transcribe.py` | Groq Whisper integration |
 | `llm.py` | Groq LLM parse and analyze |
-| `db.py` | SQLite schema and queries |
+| `db.py` | Turso/libSQL schema and queries |
 | `config.py` | Environment configuration |
 
 ---

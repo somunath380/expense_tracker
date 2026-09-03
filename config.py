@@ -12,7 +12,9 @@ LLM_MODEL = os.environ.get("LLM_MODEL", "openai/gpt-oss-20b")
 ANALYZE_MODEL = os.environ.get("ANALYZE_MODEL", "openai/gpt-oss-120b")
 LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO")
 
+TURSO_DATABASE_URL = os.environ["TURSO_DATABASE_URL"]
+TURSO_AUTH_TOKEN = os.environ["TURSO_AUTH_TOKEN"]
+
 BASE_DIR = Path(__file__).parent
-DB_PATH = BASE_DIR / os.environ.get("DB_PATH", "expense_tracker.db")
 
 TG = f"https://api.telegram.org/bot{BOT_TOKEN}"
